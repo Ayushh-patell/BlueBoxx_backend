@@ -1,0 +1,12 @@
+{
+  "ios": {
+    "latest": "1.2.0",
+    "minimum": "1.1.0",
+    "storeUrl": "itms-apps://apps.apple.com/app/idYOUR_APP_ID"
+  },
+  "android": {
+    "latest": "6.2.0",
+    "minimum": "5.5.0",
+    "storeUrl": "https://play.google.com/store/apps/details?id=com.mastermindsjuniorlunarapp"
+  }
+}
