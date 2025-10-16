@@ -8,7 +8,7 @@ import { getDashboardSeries } from '../controllers/order.dashboard.controller.js
 import { getOrdersBySiteDay } from "../controllers/order.bySite.controller.js";
 import { requireAuth } from '../middleware/auth.js';
 import { updateOrderStatus } from '../controllers/order.status.controller.js';
-import { sendOrderAcceptedEmail } from '../controllers/email.controller.js';
+import { sendOrderAcceptedEmail, sendOrderPreparedEmail } from '../controllers/email.controller.js';
 
 const router = Router();
 
@@ -19,6 +19,7 @@ router.get('/by-site/range', getOrdersBySiteRange);
 router.get('/by-site/day', getOrdersBySiteDay);
 router.post('/notify', notifyOrder);
 router.post('/accepted-email', sendOrderAcceptedEmail);
+router.post('/prepared-email', sendOrderPreparedEmail);
 router.patch('/:id/status', requireAuth, express.json(), updateOrderStatus);
 
 
