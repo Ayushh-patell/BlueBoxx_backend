@@ -1,5 +1,7 @@
+// src/api/notifyOrder.js
 import admin from '../config/firebase.js';
 import User from '../models/User.js';
+import Site from '../models/Site.js'; // <-- added
 
 // Helpers
 const normalizeTokens = (raw) => {
@@ -28,6 +30,18 @@ const chunk = (arr, size) => {
   return out;
 };
 
+// quick check for a 24-char hex string (Mongo ObjectId-like)
+const isObjectIdLike = (val) => /^[a-fA-F0-9]{24}$/.test(String(val || ''));
+
+// Try to resolve an incoming site value (slug or _id) to a slug
+const resolveSiteSlug = async (incoming) => {
+  const raw = String(incoming || '').trim();
+  if (!raw) return { slug: null, via: 'none' };
+
+  // First, assume it's already the slug
+  return { slug: raw, via: 'slug' };
+};
+
 // POST /api/order/notify
 // body: the new order payload (from your other Express backend)
 export const notifyOrder = async (req, res) => {
@@ -45,14 +59,43 @@ export const notifyOrder = async (req, res) => {
       return res.status(400).json({ error: 'Missing "site" in payload' });
     }
 
-    // Fetch ALL users for this site (not just one)
-    // If you want case-insensitive matching, set a collation on the collection or use a regex here.
-    const users = await User.find({ site });
+    // --- Step 1: resolve site input into a slug, and fetch users ---
+    let { slug: siteSlug } = await resolveSiteSlug(site);
+
+    // Attempt #1: treat incoming "site" as slug directly
+    // If you want case-insensitive match, consider adding a collation on the collection
+    // or switch to { site: new RegExp(`^${escapeRegExp(siteSlug)}$`, 'i') }.
+    let users = await User.find({ site: siteSlug });
+
+    // Attempt #2: if no users, check if "site" was actually an ObjectId and resolve to slug via Sites collection
+    let resolvedFromId = null;
     if (!users || users.length === 0) {
-      return res.status(404).json({ error: 'No users found for this site' });
+      if (isObjectIdLike(site)) {
+        const siteDoc = await Site.findById(site).lean();
+        if (!siteDoc || !siteDoc.slug) {
+          return res.status(404).json({
+            error: 'Site not found by id and no users found by provided slug',
+            tried: {
+              asSlug: siteSlug,
+              asId: String(site)
+            }
+          });
+        }
+        siteSlug = String(siteDoc.slug);
+        resolvedFromId = String(site);
+        users = await User.find({ site: siteSlug });
+      }
     }
 
-    // Collect and normalize tokens from every user
+    if (!users || users.length === 0) {
+      return res.status(404).json({
+        error: 'No users found for this site',
+        siteTried: siteSlug,
+        resolvedFromId
+      });
+    }
+
+    // --- Step 2: Collect and normalize tokens from every user ---
     let allTokens = [];
     const tokenOwners = {}; // optional: map token -> userId for debugging
     for (const u of users) {
@@ -66,10 +109,10 @@ export const notifyOrder = async (req, res) => {
 
     allTokens = uniq(allTokens);
     if (allTokens.length === 0) {
-      return res.status(404).json({ error: 'No valid FCM tokens found for users on this site' });
+      return res.status(404).json({ error: 'No valid FCM tokens found for users on this site', site: siteSlug });
     }
 
-    // Build notification content
+    // --- Step 3: Build notification content ---
     const totalDollars =
       typeof totalCents === 'number' ? (totalCents / 100).toFixed(2) : '0.00';
     const orderType = fulfillmentType || 'order';
@@ -123,7 +166,9 @@ export const notifyOrder = async (req, res) => {
 
     return res.status(200).json({
       message: `Notifications sent to ${totalSuccess} devices. ${totalFailure} failures.`,
-      site,
+      siteInput: String(site),
+      siteResolvedSlug: siteSlug,
+      resolvedFromId,
       userCount: users.length,
       tokenCount: allTokens.length,
       failedTokens: failed,
