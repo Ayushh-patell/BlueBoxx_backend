@@ -1,7 +1,7 @@
 // src/api/notifyOrder.js
 import admin from '../config/firebase.js';
 import User from '../models/User.js';
-import Site from '../models/Site.js'; // <-- added
+import Site from '../models/Site.js';
 
 // Helpers
 const normalizeTokens = (raw) => {

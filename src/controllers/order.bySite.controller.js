@@ -3,40 +3,24 @@ import mongoose from 'mongoose';
 import Site from '../models/Site.js';
 import Order from '../models/Order.js'; // shared orders model (strict:false)
 
-/**
- * Build start-of-day (midnight) in a given IANA timezone, returned as a UTC Date.
- * No external libs: use a midday probe to avoid DST edge-cases, then formatToParts.
- */
-function startOfDayUtcFor(dateYmd, tz = 'UTC') {
-  // Use a midday probe to avoid the local-time pitfalls & DST shifts
-  const probe = new Date(`${dateYmd}T12:00:00Z`);
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(probe);
-  const y = parts.find(p => p.type === 'year')?.value;
-  const m = parts.find(p => p.type === 'month')?.value;
-  const d = parts.find(p => p.type === 'day')?.value;
-  // Construct the midnight moment in that TZ, expressed as UTC
-  return new Date(`${y}-${m}-${d}T00:00:00.000Z`);
-}
-
+const CANADA_TZ = 'America/Edmonton'; // ← default & only timezone
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * GET /api/order/by-site/day?site=<slug>&date=YYYY-MM-DD[&tz=Area/City]
+ * GET /api/order/by-site/day?site=<slug>&date=YYYY-MM-DD
  *
  * - site: site.slug (text) [required]
  * - date: calendar day (YYYY-MM-DD) [required]
- * - tz: IANA timezone (optional). If provided, calculates midnight→midnight in that tz; otherwise UTC.
+ *
+ * Notes:
+ * - Timezone is fixed to America/Edmonton (Canada Mountain Time, DST-aware).
+ * - Window is midnight→midnight in America/Edmonton, compared to UTC `createdAt`.
  *
  * Returns: { ok, site:{_id,slug,name}, date, tz, window:{start,end}, count, orders[] }
  */
 export const getOrdersBySiteDay = async (req, res) => {
   try {
-    const { site: siteSlug, date, tz } = req.query || {};
+    const { site: siteSlug, date } = req.query || {};
 
     if (!siteSlug || typeof siteSlug !== 'string') {
       return res.status(400).json({ error: '`site` (slug) is required' });
@@ -49,39 +33,74 @@ export const getOrdersBySiteDay = async (req, res) => {
     const siteDoc = await Site.findOne({ slug: siteSlug }).lean();
     if (!siteDoc) return res.status(404).json({ error: 'Site not found' });
 
-    // 2) compute day window safely
-    const zone = (typeof tz === 'string' && tz.length) ? tz : 'UTC';
-    let start, end;
-    try {
-      start = startOfDayUtcFor(date, zone);
-    } catch (e) {
-      // If invalid tz, fall back to UTC
-      start = new Date(`${date}T00:00:00.000Z`);
-    }
-    end = new Date(start.getTime() + ONE_DAY_MS);
+    // 2) Build timezone-aware start/end in MongoDB (DST-safe)
+    const [y, m, d] = date.split('-').map(Number);
 
-    // Optional: quick debug log (toggle with env)
-    if (process.env.DEBUG_DAY_WINDOW === '1') {
-      console.log('[by-site/day] tz:', zone, 'start:', start.toISOString(), 'end:', end.toISOString());
-    }
-
-    // 3) query — NO pagination/skip
-    const query = {
-      site: new mongoose.Types.ObjectId(siteDoc._id),
-      createdAt: { $gte: start, $lt: end }
+    // Midnight at America/Edmonton for the given calendar date, as a UTC instant
+    const startExpr = {
+      $dateFromParts: {
+        year: y,
+        month: m,
+        day: d,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        millisecond: 0,
+        timezone: CANADA_TZ
+      }
+    };
+    const endExpr = {
+      $dateAdd: { startDate: startExpr, unit: 'day', amount: 1 }
     };
 
-    const orders = await Order.find(query)
-      .sort({ createdAt: -1 })
-      .lean()
-      .exec();
+    // 3) aggregation (match window in DB; sort newest first)
+    const pipeline = [
+      { $match: { site: new mongoose.Types.ObjectId(siteDoc._id) } },
+      {
+        $match: {
+          $expr: {
+            $and: [
+              { $gte: ['$createdAt', startExpr] },
+              { $lt:  ['$createdAt', endExpr] }
+            ]
+          }
+        }
+      },
+      { $sort: { createdAt: -1 } }
+    ];
+
+    let orders;
+    try {
+      orders = await Order.aggregate(pipeline).exec();
+    } catch (aggErr) {
+      // If your MongoDB cannot evaluate timezone-aware date expressions,
+      // we stop here to avoid incorrect results around DST boundaries.
+      console.error('Aggregation timezone support error:', aggErr?.message || aggErr);
+      return res.status(500).json({
+        ok: false,
+        error:
+          'This endpoint requires MongoDB date expressions with timezone support. ' +
+          'Please ensure your MongoDB version supports $dateFromParts/$dateAdd with the `timezone` option.'
+      });
+    }
+
+    // 4) Also materialize the resolved UTC start/end to echo in the response (cheap, no data scan)
+    const windowDoc = await Order.aggregate([
+      { $limit: 1 },
+      { $project: { _id: 0, start: startExpr, end: endExpr } }
+    ]).exec();
+
+    const resolvedStart =
+      windowDoc?.[0]?.start ?? new Date(`${date}T00:00:00.000Z`);
+    const resolvedEnd =
+      windowDoc?.[0]?.end ?? new Date(resolvedStart.getTime() + ONE_DAY_MS);
 
     return res.json({
       ok: true,
       site: { _id: siteDoc._id, slug: siteDoc.slug, name: siteDoc.name || siteDoc.slug },
       date,
-      tz: zone,
-      window: { start, end },
+      tz: CANADA_TZ,
+      window: { start: resolvedStart, end: resolvedEnd },
       count: orders.length,
       orders
     });

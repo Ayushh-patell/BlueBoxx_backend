@@ -3,24 +3,24 @@ import mongoose from 'mongoose';
 import Site from '../models/Site.js';
 import Order from '../models/Order.js'; // shared orders model (strict:false)
 
+const CANADA_TZ = 'America/Edmonton';
+const MAX_CUSTOM_DAYS = 62; // ~2 months
+
 function isValidObjectIdString(s) {
   if (typeof s !== 'string' || s.length !== 24) return false;
   if (!mongoose.Types.ObjectId.isValid(s)) return false;
   return new mongoose.Types.ObjectId(s).toString() === s.toLowerCase();
 }
-function startOfTodayUtcInTz(tz = 'UTC') {
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
-  }).formatToParts(now);
-  const y = parts.find(p => p.type === 'year')?.value;
-  const m = parts.find(p => p.type === 'month')?.value;
-  const d = parts.find(p => p.type === 'day')?.value;
-  return new Date(`${y}-${m}-${d}T00:00:00.000Z`);
+
+function addDays(d, n) {
+  return new Date(d.getTime() + n * 24 * 60 * 60 * 1000);
 }
-function addDays(d, n) { return new Date(d.getTime() + n * 24 * 60 * 60 * 1000); }
-function fmtDayLabel(date, tz) { return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(date); }
-function fmtDayLabelShort(date, tz) { return new Intl.DateTimeFormat('en-US', { timeZone: tz, month: 'short', day: '2-digit' }).format(date); }
+function fmtDayLabel(date, tz) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(date);
+}
+function fmtDayLabelShort(date, tz) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, month: 'short', day: '2-digit' }).format(date);
+}
 function buildDayBuckets(startUtc, endUtc, tz, forWeek) {
   const out = [];
   for (let t = new Date(startUtc); t < endUtc; t = addDays(t, 1)) {
@@ -30,31 +30,30 @@ function buildDayBuckets(startUtc, endUtc, tz, forWeek) {
   }
   return out;
 }
+
 function customerIdExpr() {
   // prefer dropoff.phone, else userEmail
   return { $ifNull: [ { $getField: { field: 'phone', input: '$dropoff' } }, '$userEmail' ] };
 }
 
 /**
- * GET /api/order/dashboard?site=<slugOrId>&mode=week|month|custom[&tz=Area/City][&start=YYYY-MM-DD][&end=YYYY-MM-DD]
- * NOTE: Orders with status "awaiting_payment" are excluded.
+ * GET /api/order/dashboard?site=<slugOrId>&mode=week|month|custom[&start=YYYY-MM-DD][&end=YYYY-MM-DD]
+ * NOTE:
+ * - Timezone is FIXED to America/Edmonton (DST-aware).
+ * - Orders with status "awaiting_payment" are excluded (case-insensitive).
+ * - Series window INCLUDES today (i.e., up to tomorrow@00:00 Edmonton).
+ *
  * Returns:
  * {
  *   ok, site, mode, tz, window:{start,end},
  *   labels[], orders[], revenue[], customers[],
- *   totals: {
- *     orders: number,
- *     revenue: number,             // dollars
- *     customersUnique: number,     // unique by phone/email across the whole window
- *     menuUnique: number           // unique items across the whole window (by items.name)
- *   }
+ *   totals: { orders, revenue, customersUnique, menuUnique }
  * }
  */
 export const getDashboardSeries = async (req, res) => {
   try {
-    const { site: siteParam, mode, tz } = req.query || {};
+    const { site: siteParam, mode } = req.query || {};
     let { start: startStr, end: endStr } = req.query || {};
-    const zone = typeof tz === 'string' && tz.length ? tz : 'UTC';
 
     if (!siteParam || typeof siteParam !== 'string') {
       return res.status(400).json({ error: '`site` is required (slug or ObjectId)' });
@@ -69,66 +68,89 @@ export const getDashboardSeries = async (req, res) => {
     if (isValidObjectIdString(siteParam)) {
       siteId = new mongoose.Types.ObjectId(siteParam);
       siteDoc = await Site.findById(siteId).lean();
+      if (!siteDoc) return res.status(404).json({ error: 'Site not found for provided ObjectId' });
     } else {
       siteDoc = await Site.findOne({ slug: siteParam }).lean();
       if (!siteDoc) return res.status(404).json({ error: 'Site not found for provided slug' });
       siteId = siteDoc._id;
     }
 
-    // Window (INCLUDES today)
-    const todayStartUtc = startOfTodayUtcInTz(zone);
-    let startUtc, endUtc, forWeekLabels = false;
-    if (mode === 'week') {
-      startUtc = addDays(todayStartUtc, -6);
-      endUtc = addDays(todayStartUtc, 1);
-      forWeekLabels = true;
-    } else if (mode === 'month') {
-      startUtc = addDays(todayStartUtc, -29);
-      endUtc = addDays(todayStartUtc, 1);
+    // ---- Build timezone-aware start/end as MongoDB expressions (DST-safe) ----
+    // Includes today: [start, end) where end = tomorrow@00:00 Edmonton.
+    let startExpr, endExpr, forWeekLabels = false;
+
+    if (mode === 'week' || mode === 'month') {
+      const todayStartInEdmonton = {
+        $dateTrunc: { date: '$$NOW', unit: 'day', timezone: CANADA_TZ }
+      };
+      // end (exclusive) is tomorrow@00:00 in Edmonton for inclusive-today charts
+      const tomorrowStartInEdmonton = { $dateAdd: { startDate: todayStartInEdmonton, unit: 'day', amount: 1 } };
+      const lookbackDays = mode === 'week' ? 6 : 29; // inclusive of today => 7 or 30 total days
+      startExpr = { $dateAdd: { startDate: todayStartInEdmonton, unit: 'day', amount: -lookbackDays } };
+      endExpr   = tomorrowStartInEdmonton;
+      forWeekLabels = (mode === 'week');
     } else {
-      if (!startStr || !/^\d{4}-\d{2}-\d{2}$/.test(startStr) || !endStr || !/^\d{4}-\d{2}-\d{2}$/.test(endStr)) {
+      // custom
+      if (!startStr || !/^\d{4}-\d{2}-\d{2}$/.test(startStr) ||
+          !endStr   || !/^\d{4}-\d{2}-\d{2}$/.test(endStr)) {
         return res.status(400).json({ error: '`start` and `end` (YYYY-MM-DD) are required for custom mode' });
       }
-      // build local SOD for both, convert to [start, end+1d)
-      const mkSod = (dStr) => {
-        const probe = new Date(`${dStr}T12:00:00Z`);
-        const p = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year:'numeric', month:'2-digit', day:'2-digit' }).formatToParts(probe);
-        const y = p.find(x => x.type === 'year')?.value;
-        const m = p.find(x => x.type === 'month')?.value;
-        const d = p.find(x => x.type === 'day')?.value;
-        return new Date(`${y}-${m}-${d}T00:00:00.000Z`);
-      };
-      startUtc = mkSod(startStr);
-      endUtc = addDays(mkSod(endStr), 1);
-      // clamp to 62 days
-      const maxMs = 62 * 86400000;
-      if (endUtc.getTime() - startUtc.getTime() > maxMs) {
-        endUtc = new Date(startUtc.getTime() + maxMs);
+
+      // Clamp to ~2 months (app-side, simple day count)
+      const startUtcClamp = new Date(`${startStr}T00:00:00.000Z`);
+      const endUtcClamp   = new Date(`${endStr}T00:00:00.000Z`);
+      const diffDays = Math.floor((endUtcClamp - startUtcClamp) / 86400000) + 1;
+      if (diffDays > MAX_CUSTOM_DAYS) {
+        const clampedEnd = new Date(startUtcClamp.getTime() + (MAX_CUSTOM_DAYS - 1) * 86400000);
+        endStr = clampedEnd.toISOString().slice(0, 10);
       }
+
+      const [sy, sm, sd] = startStr.split('-').map(Number);
+      const [ey, em, ed] = endStr.split('-').map(Number);
+
+      const startBase = {
+        $dateFromParts: {
+          year: sy, month: sm, day: sd,
+          hour: 0, minute: 0, second: 0, millisecond: 0,
+          timezone: CANADA_TZ
+        }
+      };
+      const endBase = {
+        $dateFromParts: {
+          year: ey, month: em, day: ed,
+          hour: 0, minute: 0, second: 0, millisecond: 0,
+          timezone: CANADA_TZ
+        }
+      };
+      startExpr = startBase;
+      endExpr   = { $dateAdd: { startDate: endBase, unit: 'day', amount: 1 } };
     }
 
-    // Day buckets & keys
-    const buckets = buildDayBuckets(startUtc, endUtc, zone, forWeekLabels);
-    const labels = buckets.map(b => b.label);
-    const dayKeys = buckets.map(b => b.key);
-
-    // Aggregation: per-day series + overall totals (unique customers & unique items)
+    // ---- Aggregation: window match + exclude awaiting_payment; build per-day & totals ----
     const pipeline = [
-      // basic window + site match
-      { $match: { site: siteId, createdAt: { $gte: startUtc, $lt: endUtc } } },
-
-      // compute dayKey / customerId / statusLower (for filtering)
+      { $match: { site: siteId } },
       {
-        $addFields: {
-          dayKey: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: zone } },
-          customerId: customerIdExpr(),
-          statusLower: { $toLower: { $ifNull: ['$status', ''] } }
+        $match: {
+          $expr: {
+            $and: [
+              { $gte: ['$createdAt', startExpr] },
+              { $lt:  ['$createdAt', endExpr] },
+              {
+                $ne: [
+                  { $toLower: { $ifNull: ['$status', ''] } },
+                  'awaiting_payment'
+                ]
+              }
+            ]
+          }
         }
       },
-
-      // EXCLUDE awaiting_payment
-      { $match: { statusLower: { $ne: 'awaiting_payment' } } },
-
+      {
+        $addFields: {
+          dayKey: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: CANADA_TZ } },
+          customerId: customerIdExpr()
+        }
+      },
       {
         $facet: {
           perDay: [
@@ -157,13 +179,12 @@ export const getDashboardSeries = async (req, res) => {
                 orders: { $sum: 1 },
                 revenueCents: { $sum: { $ifNull: ['$totalCents', 0] } },
                 customersAll: { $addToSet: '$customerId' },
-                // unique menu items across window — use items.name (fallback safe)
                 itemsAll: {
                   $addToSet: {
                     $cond: [
                       { $gt: [{ $size: { $ifNull: ['$items', []] } }, 0] },
                       { $map: { input: '$items', as: 'it', in: { $ifNull: ['$$it.name', ''] } } },
-                      [] // empty
+                      []
                     ]
                   }
                 }
@@ -175,39 +196,63 @@ export const getDashboardSeries = async (req, res) => {
                 orders: 1,
                 revenueCents: 1,
                 customersUnique: { $size: '$customersAll' },
-                // itemsAll is an array-of-arrays — flatten and unique
                 menuUnique: {
                   $size: {
-                    $setUnion: [{
+                    $setUnion: [ {
                       $reduce: {
                         input: '$itemsAll',
                         initialValue: [],
                         in: { $concatArrays: ['$$value', '$$this'] }
                       }
-                    }, []]
+                    }, [] ]
                   }
                 }
               }
             }
+          ],
+          // Also compute the resolved UTC window once to echo in response (no data scan)
+          windowEcho: [
+            { $limit: 1 },
+            { $project: { _id: 0, start: startExpr, end: endExpr } }
           ]
         }
       }
     ];
 
-    const [agg] = await Order.aggregate(pipeline).allowDiskUse(true).exec();
+    let agg;
+    try {
+      [agg] = await Order.aggregate(pipeline).allowDiskUse(true).exec();
+    } catch (aggErr) {
+      console.error('Aggregation timezone support error:', aggErr?.message || aggErr);
+      return res.status(500).json({
+        ok: false,
+        error:
+          'This endpoint requires MongoDB date expressions with timezone support ' +
+          '($dateTrunc/$dateFromParts/$dateAdd). Please upgrade MongoDB to 5.0+.'
+      });
+    }
+
     const perDay = agg?.perDay ?? [];
     const totalsRow = (agg?.totals && agg.totals[0]) || { orders: 0, revenueCents: 0, customersUnique: 0, menuUnique: 0 };
+    const windowDoc = (agg?.windowEcho && agg.windowEcho[0]) || { start: null, end: null };
+    const startUtc = windowDoc.start;
+    const endUtc   = windowDoc.end;
 
-    // Map per-day to aligned arrays
+    // Day buckets/alignment built in JS using the resolved UTC instants, but labeled in Edmonton time
+    const buckets = buildDayBuckets(startUtc, endUtc, CANADA_TZ, forWeekLabels);
+    const labels = buckets.map(b => b.label);
+    const dayKeys = buckets.map(b => b.key);
+
+    // Align per-day rows to dayKeys
     const byKey = new Map(perDay.map(r => [r.dayKey, r]));
-    const orders = [];
-    const revenue = [];
-    const customers = [];
+    const ordersArr = [];
+    const revenueArr = [];
+    const customersArr = [];
     for (const k of dayKeys) {
       const r = byKey.get(k);
-      orders.push(r ? r.orders : 0);
-      revenue.push(r ? Math.round((r.revenueCents / 100) * 100) / 100 : 0);
-      customers.push(r ? r.customers : 0);
+      ordersArr.push(r ? r.orders : 0);
+      revenueArr.push(r ? Math.round((r.revenueCents / 100) * 100) / 100 : 0);
+      customersArr.push(r ? r.customers : 0);
     }
 
     return res.json({
@@ -216,12 +261,12 @@ export const getDashboardSeries = async (req, res) => {
         ? { _id: siteDoc._id, slug: siteDoc.slug, name: siteDoc.name || siteDoc.slug }
         : { _id: siteId, slug: null, name: null },
       mode,
-      tz: zone,
-      window: { start: startUtc, end: endUtc },
+      tz: CANADA_TZ,
+      window: { start: startUtc, end: endUtc }, // UTC instants (Edmonton-local boundaries)
       labels,
-      orders,
-      revenue,
-      customers,
+      orders: ordersArr,
+      revenue: revenueArr,
+      customers: customersArr,
       totals: {
         orders: totalsRow.orders || 0,
         revenue: Math.round((totalsRow.revenueCents || 0) / 100 * 100) / 100,
