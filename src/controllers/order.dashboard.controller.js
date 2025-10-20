@@ -12,28 +12,63 @@ function isValidObjectIdString(s) {
   return new mongoose.Types.ObjectId(s).toString() === s.toLowerCase();
 }
 
-function addDays(d, n) {
-  return new Date(d.getTime() + n * 24 * 60 * 60 * 1000);
+// --- DST-safe bucket helpers (no fixed 24h stepping) ---
+const keyFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: CANADA_TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone: CANADA_TZ, weekday: 'short' });
+const monthDayFmt = new Intl.DateTimeFormat('en-US', { timeZone: CANADA_TZ, month: 'short', day: '2-digit' });
+
+function parseKey(key) {
+  // key is "YYYY-MM-DD"
+  const [y, m, d] = key.split('-').map(Number);
+  return { y, m, d };
 }
-function fmtDayLabel(date, tz) {
-  return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(date);
+function keyToUTCNoonDate({ y, m, d }) {
+  // Use UTC noon to avoid any TZ edge cases when formatting labels
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
 }
-function fmtDayLabelShort(date, tz) {
-  return new Intl.DateTimeFormat('en-US', { timeZone: tz, month: 'short', day: '2-digit' }).format(date);
+function nextKey({ y, m, d }) {
+  // Increment calendar date using UTC (DST-agnostic)
+  const dt = new Date(Date.UTC(y, m - 1, d) + 86400000);
+  return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
 }
-function buildDayBuckets(startUtc, endUtc, tz, forWeek) {
+function cmpKeys(a, b) {
+  if (a.y !== b.y) return a.y - b.y;
+  if (a.m !== b.m) return a.m - b.m;
+  return a.d - b.d;
+}
+function keyString({ y, m, d }) {
+  const mm = String(m).padStart(2, '0');
+  const dd = String(d).padStart(2, '0');
+  return `${y}-${mm}-${dd}`;
+}
+function buildDayBucketsDSTSafe(startUtc, endUtc, tz, forWeek) {
+  if (!startUtc || !endUtc) return [];
+  // Determine first/last included local days using Edmonton time
+  const startKeyStr = keyFmt.format(startUtc);                  // local date for start boundary
+  const endKeyStr = keyFmt.format(new Date(endUtc.getTime() - 1)); // local date for last included instant
+
+  let cur = parseKey(startKeyStr);
+  const end = parseKey(endKeyStr);
   const out = [];
-  for (let t = new Date(startUtc); t < endUtc; t = addDays(t, 1)) {
-    const key = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' }).format(t);
-    const label = forWeek ? fmtDayLabel(t, tz) : fmtDayLabelShort(t, tz);
-    out.push({ key, label, date: new Date(t) });
+
+  while (cmpKeys(cur, end) <= 0) {
+    const label = forWeek
+      ? weekdayFmt.format(keyToUTCNoonDate(cur))
+      : monthDayFmt.format(keyToUTCNoonDate(cur));
+    out.push({ key: keyString(cur), label });
+    cur = nextKey(cur);
   }
   return out;
 }
 
 function customerIdExpr() {
   // prefer dropoff.phone, else userEmail
-  return { $ifNull: [ { $getField: { field: 'phone', input: '$dropoff' } }, '$userEmail' ] };
+  return { $ifNull: [{ $getField: { field: 'phone', input: '$dropoff' } }, '$userEmail'] };
 }
 
 /**
@@ -83,11 +118,21 @@ export const getDashboardSeries = async (req, res) => {
       const todayStartInEdmonton = {
         $dateTrunc: { date: '$$NOW', unit: 'day', timezone: CANADA_TZ }
       };
-      // end (exclusive) is tomorrow@00:00 in Edmonton for inclusive-today charts
-      const tomorrowStartInEdmonton = { $dateAdd: { startDate: todayStartInEdmonton, unit: 'day', amount: 1 } };
+      const tomorrowStartInEdmonton = {
+        // IMPORTANT: timezone param so +1 day respects DST boundaries
+        $dateAdd: { startDate: todayStartInEdmonton, unit: 'day', amount: 1, timezone: CANADA_TZ }
+      };
       const lookbackDays = mode === 'week' ? 6 : 29; // inclusive of today => 7 or 30 total days
-      startExpr = { $dateAdd: { startDate: todayStartInEdmonton, unit: 'day', amount: -lookbackDays } };
-      endExpr   = tomorrowStartInEdmonton;
+
+      startExpr = {
+        $dateAdd: {
+          startDate: todayStartInEdmonton,
+          unit: 'day',
+          amount: -lookbackDays,
+          timezone: CANADA_TZ // <- DST-safe subtraction
+        }
+      };
+      endExpr = tomorrowStartInEdmonton;
       forWeekLabels = (mode === 'week');
     } else {
       // custom
@@ -123,7 +168,14 @@ export const getDashboardSeries = async (req, res) => {
         }
       };
       startExpr = startBase;
-      endExpr   = { $dateAdd: { startDate: endBase, unit: 'day', amount: 1 } };
+      endExpr   = {
+        $dateAdd: {
+          startDate: endBase,
+          unit: 'day',
+          amount: 1,
+          timezone: CANADA_TZ // <- DST-safe addition
+        }
+      };
     }
 
     // ---- Aggregation: window match + exclude awaiting_payment; build per-day & totals ----
@@ -198,13 +250,9 @@ export const getDashboardSeries = async (req, res) => {
                 customersUnique: { $size: '$customersAll' },
                 menuUnique: {
                   $size: {
-                    $setUnion: [ {
-                      $reduce: {
-                        input: '$itemsAll',
-                        initialValue: [],
-                        in: { $concatArrays: ['$$value', '$$this'] }
-                      }
-                    }, [] ]
+                    $setUnion: [{
+                      $reduce: { input: '$itemsAll', initialValue: [], in: { $concatArrays: ['$$value', '$$this'] } }
+                    }, []]
                   }
                 }
               }
@@ -238,8 +286,8 @@ export const getDashboardSeries = async (req, res) => {
     const startUtc = windowDoc.start;
     const endUtc   = windowDoc.end;
 
-    // Day buckets/alignment built in JS using the resolved UTC instants, but labeled in Edmonton time
-    const buckets = buildDayBuckets(startUtc, endUtc, CANADA_TZ, forWeekLabels);
+    // Build continuous day buckets by Edmonton calendar days (DST-safe)
+    const buckets = buildDayBucketsDSTSafe(startUtc, endUtc, CANADA_TZ, forWeekLabels);
     const labels = buckets.map(b => b.label);
     const dayKeys = buckets.map(b => b.key);
 
@@ -269,7 +317,7 @@ export const getDashboardSeries = async (req, res) => {
       customers: customersArr,
       totals: {
         orders: totalsRow.orders || 0,
-        revenue: Math.round((totalsRow.revenueCents || 0) / 100 * 100) / 100,
+        revenue: Math.round(((totalsRow.revenueCents || 0) / 100) * 100) / 100,
         customersUnique: totalsRow.customersUnique || 0,
         menuUnique: totalsRow.menuUnique || 0
       }

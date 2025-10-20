@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import Site from '../models/Site.js';
 import Order from '../models/Order.js'; // shared orders model (strict:false)
 
-const CANADA_TZ = 'America/Edmonton'; // ← default & only timezone
+const CANADA_TZ = 'America/Edmonton'; // MST/MDT (DST-aware)
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -49,8 +49,10 @@ export const getOrdersBySiteDay = async (req, res) => {
         timezone: CANADA_TZ
       }
     };
+
+    // IMPORTANT: include `timezone` so "add 1 day" honors DST transitions
     const endExpr = {
-      $dateAdd: { startDate: startExpr, unit: 'day', amount: 1 }
+      $dateAdd: { startDate: startExpr, unit: 'day', amount: 1, timezone: CANADA_TZ }
     };
 
     // 3) aggregation (match window in DB; sort newest first)
@@ -73,14 +75,14 @@ export const getOrdersBySiteDay = async (req, res) => {
     try {
       orders = await Order.aggregate(pipeline).exec();
     } catch (aggErr) {
-      // If your MongoDB cannot evaluate timezone-aware date expressions,
-      // we stop here to avoid incorrect results around DST boundaries.
+      // If MongoDB cannot evaluate timezone-aware date expressions,
+      // stop here to avoid incorrect results around DST boundaries.
       console.error('Aggregation timezone support error:', aggErr?.message || aggErr);
       return res.status(500).json({
         ok: false,
         error:
           'This endpoint requires MongoDB date expressions with timezone support. ' +
-          'Please ensure your MongoDB version supports $dateFromParts/$dateAdd with the `timezone` option.'
+          'Ensure your MongoDB version supports $dateFromParts and $dateAdd with the `timezone` option (MongoDB 5.0+).'
       });
     }
 

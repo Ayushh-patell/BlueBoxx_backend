@@ -38,18 +38,25 @@ export const getOrdersBySiteRange = async (req, res) => {
     if (!siteDoc) return res.status(404).json({ error: 'Site not found' });
 
     // 2) Build timezone-aware start/end window EXPRESSIONS (evaluated by MongoDB)
-    //    For week/month we derive from "today@00:00 Edmonton" using $dateTrunc with timezone.
-    //    For custom we convert provided YYYY-MM-DD into local-midnight instants with $dateFromParts.
     let startExpr, endExpr;
 
     if (mode === 'week' || mode === 'month') {
+      // today@00:00 in Edmonton
       const todayStartInEdmonton = {
         $dateTrunc: { date: '$$NOW', unit: 'day', timezone: CANADA_TZ }
       };
       const lookbackDays = mode === 'week' ? 7 : 30;
 
-      startExpr = { $dateAdd: { startDate: todayStartInEdmonton, unit: 'day', amount: -lookbackDays } };
-      endExpr   = todayStartInEdmonton; // exclusive upper bound (today@00:00 in Edmonton)
+      // IMPORTANT: add `timezone` to $dateAdd so subtracting days is DST-safe
+      startExpr = {
+        $dateAdd: {
+          startDate: todayStartInEdmonton,
+          unit: 'day',
+          amount: -lookbackDays,
+          timezone: CANADA_TZ
+        }
+      };
+      endExpr = todayStartInEdmonton; // exclusive upper bound (today@00:00 Edmonton)
     } else {
       // custom: require YYYY-MM-DD for both
       if (!startStr || !/^\d{4}-\d{2}-\d{2}$/.test(startStr) ||
@@ -57,12 +64,11 @@ export const getOrdersBySiteRange = async (req, res) => {
         return res.status(400).json({ error: '`start` and `end` (YYYY-MM-DD) are required for custom mode' });
       }
 
-      // Clamp to ~2 months on the app side (calendar-day diff, not timezone-sensitive)
+      // Clamp to ~2 months on app side (calendar-day diff; UTC math is fine here)
       const startUtcClamp = new Date(`${startStr}T00:00:00.000Z`);
       const endUtcClamp   = new Date(`${endStr}T00:00:00.000Z`);
       const diffDays = Math.floor((endUtcClamp.getTime() - startUtcClamp.getTime()) / (24 * 60 * 60 * 1000)) + 1;
       if (diffDays > MAX_CUSTOM_DAYS) {
-        // Move the end forward to comply
         const clampedEnd = new Date(startUtcClamp.getTime() + (MAX_CUSTOM_DAYS - 1) * 24 * 60 * 60 * 1000);
         endStr = clampedEnd.toISOString().slice(0, 10);
       }
@@ -70,7 +76,7 @@ export const getOrdersBySiteRange = async (req, res) => {
       const [sy, sm, sd] = startStr.split('-').map(Number);
       const [ey, em, ed] = endStr.split('-').map(Number);
 
-      // Start is midnight at Edmonton for start date
+      // Start is local midnight at Edmonton for start date
       startExpr = {
         $dateFromParts: {
           year: sy, month: sm, day: sd,
@@ -78,7 +84,8 @@ export const getOrdersBySiteRange = async (req, res) => {
           timezone: CANADA_TZ
         }
       };
-      // End is midnight at Edmonton for (end date + 1 day)
+
+      // End is local midnight at Edmonton for (end date + 1 day) — include `timezone` in $dateAdd
       const endBase = {
         $dateFromParts: {
           year: ey, month: em, day: ed,
@@ -86,10 +93,17 @@ export const getOrdersBySiteRange = async (req, res) => {
           timezone: CANADA_TZ
         }
       };
-      endExpr = { $dateAdd: { startDate: endBase, unit: 'day', amount: 1 } };
+      endExpr = {
+        $dateAdd: {
+          startDate: endBase,
+          unit: 'day',
+          amount: 1,
+          timezone: CANADA_TZ
+        }
+      };
     }
 
-    // 3) Aggregation: match by site & window and exclude "awaiting_payment" (case-insensitive)
+    // 3) Aggregation: match by site & window and exclude "awaiting_payment"
     const matchSite = { $match: { site: new mongoose.Types.ObjectId(siteDoc._id) } };
 
     const matchWindowAndStatus = {
