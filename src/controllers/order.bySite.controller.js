@@ -5,6 +5,7 @@ import Order from '../models/Order.js'; // shared orders model (strict:false)
 
 const CANADA_TZ = 'America/Edmonton'; // MST/MDT (DST-aware)
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const FUTURE_DAYS = 7; // extend by 1 week beyond the requested day (internal only)
 
 /**
  * GET /api/order/by-site/day?site=<slug>&date=YYYY-MM-DD
@@ -14,7 +15,8 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
  *
  * Notes:
  * - Timezone is fixed to America/Edmonton (Canada Mountain Time, DST-aware).
- * - Window is midnight→midnight in America/Edmonton, compared to UTC `createdAt`.
+ * - The response remains unchanged and shows the original single-day window.
+ * - Internally, we extend the query window by +7 days to also fetch future orders.
  *
  * Returns: { ok, site:{_id,slug,name}, date, tz, window:{start,end}, count, orders[] }
  */
@@ -50,12 +52,18 @@ export const getOrdersBySiteDay = async (req, res) => {
       }
     };
 
-    // IMPORTANT: include `timezone` so "add 1 day" honors DST transitions
-    const endExpr = {
+    // Original single-day end (midnight next day), DST-aware — used for response.window only
+    const endDayExpr = {
       $dateAdd: { startDate: startExpr, unit: 'day', amount: 1, timezone: CANADA_TZ }
     };
 
-    // 3) aggregation (match window in DB; sort newest first)
+    // Extended end: include the next 1 week (7 days) after the requested day
+    const endExtendedExpr = {
+      $dateAdd: { startDate: startExpr, unit: 'day', amount: 1 + FUTURE_DAYS, timezone: CANADA_TZ }
+    };
+
+    // 3) aggregation (match EXTENDED window in DB; sort newest first)
+    // NOTE: Response.window still shows the SINGLE-DAY window for compatibility.
     const pipeline = [
       { $match: { site: new mongoose.Types.ObjectId(siteDoc._id) } },
       {
@@ -63,7 +71,7 @@ export const getOrdersBySiteDay = async (req, res) => {
           $expr: {
             $and: [
               { $gte: ['$createdAt', startExpr] },
-              { $lt:  ['$createdAt', endExpr] }
+              { $lt:  ['$createdAt', endExtendedExpr] }
             ]
           }
         }
@@ -86,10 +94,10 @@ export const getOrdersBySiteDay = async (req, res) => {
       });
     }
 
-    // 4) Also materialize the resolved UTC start/end to echo in the response (cheap, no data scan)
+    // 4) Materialize the (single-day) window we expose in the response (no data scan)
     const windowDoc = await Order.aggregate([
       { $limit: 1 },
-      { $project: { _id: 0, start: startExpr, end: endExpr } }
+      { $project: { _id: 0, start: startExpr, end: endDayExpr } }
     ]).exec();
 
     const resolvedStart =
@@ -102,9 +110,10 @@ export const getOrdersBySiteDay = async (req, res) => {
       site: { _id: siteDoc._id, slug: siteDoc.slug, name: siteDoc.name || siteDoc.slug },
       date,
       tz: CANADA_TZ,
+      // Keep response window as the original single-day bounds for compatibility:
       window: { start: resolvedStart, end: resolvedEnd },
       count: orders.length,
-      orders
+      orders // includes current-day + next 7 days in the same list
     });
   } catch (err) {
     console.error('getOrdersBySiteDay error:', err?.stack || err?.message || err);
