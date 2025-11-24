@@ -10,6 +10,7 @@ import './config/db.js';
 import userRoutes from './routes/user.js';
 import orderRoutes from './routes/order.js';
 import utilRoutes from './routes/utils.js';
+import { stripeWebhook } from './api/stripeWebhook.js';
 
 const app = express();
 
@@ -23,6 +24,15 @@ const PUBLIC_DIR = path.resolve(process.cwd(), 'public');
 // Log what we’re serving (helps debug mismatches)
 console.log('Serving static from:', PUBLIC_DIR);
 console.log('app-versions.json exists:', fs.existsSync(path.join(PUBLIC_DIR, 'app-versions.json')));
+
+
+// ⚠️ STRIPE WEBHOOK ROUTE MUST COME BEFORE express.json()
+// It needs access to the raw request body for signature verification.
+app.post(
+  '/api/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  stripeWebhook
+);
 
 // Middlewares
 app.use(helmet());
@@ -41,6 +51,10 @@ app.use('/public', express.static(PUBLIC_DIR, {
   maxAge: '1h',
   etag: true,
 }));
+
+
+// AWS Path
+app.get('/health', (_, res) => res.status(200).send('OK'));
 
 // Routes
 app.use('/api/user', userRoutes);

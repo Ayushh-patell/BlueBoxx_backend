@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "main": "src/server.js",
   "type": "module",
+  "engines": { "node": ">=18 <23" },
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js"
   },
   "keywords": [],
-  "author": "",
+  "author": {"name": "Ayush patel", "email": "ayush.patel.code@gmail.com"},
   "license": "ISC",
   "description": "",
   "dependencies": {

@@ -42,29 +42,38 @@ const resolveSiteSlug = async (incoming) => {
   return { slug: raw, via: 'slug' };
 };
 
-// POST /api/order/notify
-// body: the new order payload (from your other Express backend)
-export const notifyOrder = async (req, res) => {
+/**
+ * Core logic that sends notifications for an order.
+ * Can be used both by the HTTP controller and by the Stripe webhook.
+ *
+ * @param {Object} order - Order object (Mongoose doc or plain object)
+ * @returns {Promise<{ statusCode: number, body: any }>}
+ */
+export const sendOrderNotification = async (order) => {
   try {
-    const order = req.body || {};
+    // If it's a Mongoose document, convert to plain object first
+    const plainOrder =
+      typeof order.toObject === 'function' ? order.toObject() : order || {};
+
     const {
       site,
       status,
       fulfillmentType, // 'pickup' | 'delivery' | etc.
       totalCents,
       _id: orderId
-    } = order;
+    } = plainOrder;
 
     if (!site) {
-      return res.status(400).json({ error: 'Missing "site" in payload' });
+      return {
+        statusCode: 400,
+        body: { error: 'Missing "site" in payload' }
+      };
     }
 
     // --- Step 1: resolve site input into a slug, and fetch users ---
     let { slug: siteSlug } = await resolveSiteSlug(site);
 
     // Attempt #1: treat incoming "site" as slug directly
-    // If you want case-insensitive match, consider adding a collation on the collection
-    // or switch to { site: new RegExp(`^${escapeRegExp(siteSlug)}$`, 'i') }.
     let users = await User.find({ site: siteSlug });
 
     // Attempt #2: if no users, check if "site" was actually an ObjectId and resolve to slug via Sites collection
@@ -73,13 +82,16 @@ export const notifyOrder = async (req, res) => {
       if (isObjectIdLike(site)) {
         const siteDoc = await Site.findById(site).lean();
         if (!siteDoc || !siteDoc.slug) {
-          return res.status(404).json({
-            error: 'Site not found by id and no users found by provided slug',
-            tried: {
-              asSlug: siteSlug,
-              asId: String(site)
+          return {
+            statusCode: 404,
+            body: {
+              error: 'Site not found by id and no users found by provided slug',
+              tried: {
+                asSlug: siteSlug,
+                asId: String(site)
+              }
             }
-          });
+          };
         }
         siteSlug = String(siteDoc.slug);
         resolvedFromId = String(site);
@@ -88,11 +100,14 @@ export const notifyOrder = async (req, res) => {
     }
 
     if (!users || users.length === 0) {
-      return res.status(404).json({
-        error: 'No users found for this site',
-        siteTried: siteSlug,
-        resolvedFromId
-      });
+      return {
+        statusCode: 404,
+        body: {
+          error: 'No users found for this site',
+          siteTried: siteSlug,
+          resolvedFromId
+        }
+      };
     }
 
     // --- Step 2: Collect and normalize tokens from every user ---
@@ -109,7 +124,13 @@ export const notifyOrder = async (req, res) => {
 
     allTokens = uniq(allTokens);
     if (allTokens.length === 0) {
-      return res.status(404).json({ error: 'No valid FCM tokens found for users on this site', site: siteSlug });
+      return {
+        statusCode: 404,
+        body: {
+          error: 'No valid FCM tokens found for users on this site',
+          site: siteSlug
+        }
+      };
     }
 
     // --- Step 3: Build notification content ---
@@ -164,27 +185,40 @@ export const notifyOrder = async (req, res) => {
       });
     }
 
-    return res.status(200).json({
-      message: `Notifications sent to ${totalSuccess} devices. ${totalFailure} failures.`,
-      siteInput: String(site),
-      siteResolvedSlug: siteSlug,
-      resolvedFromId,
-      userCount: users.length,
-      tokenCount: allTokens.length,
-      failedTokens: failed,
-      outgoing: {
-        title,
-        body,
-        fulfillmentType: orderType,
-        totalDollars,
-        sound: soundName
+    return {
+      statusCode: 200,
+      body: {
+        message: `Notifications sent to ${totalSuccess} devices. ${totalFailure} failures.`,
+        siteInput: String(site),
+        siteResolvedSlug: siteSlug,
+        resolvedFromId,
+        userCount: users.length,
+        tokenCount: allTokens.length,
+        failedTokens: failed,
+        outgoing: {
+          title,
+          body,
+          fulfillmentType: orderType,
+          totalDollars,
+          sound: soundName
+        }
       }
-    });
+    };
   } catch (err) {
     console.error('❌ notify error:', err?.message || err);
-    return res.status(500).json({
-      error: 'Internal Server Error',
-      details: err?.message || String(err)
-    });
+    return {
+      statusCode: 500,
+      body: {
+        error: 'Internal Server Error',
+        details: err?.message || String(err)
+      }
+    };
   }
+};
+
+// POST /api/order/notify
+// body: the new order payload (from your other Express backend)
+export const notifyOrder = async (req, res) => {
+  const result = await sendOrderNotification(req.body || {});
+  return res.status(result.statusCode).json(result.body);
 };
