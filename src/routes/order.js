@@ -6,7 +6,7 @@ import { notifyOrder } from '../controllers/notify.controller.js';
 import { getOrdersBySiteRange } from '../controllers/order.range.controller.js';
 import { getDashboardSeries } from '../controllers/order.dashboard.controller.js';
 import { getOrdersBySiteDay } from "../controllers/order.bySite.controller.js";
-import { requireAuth } from '../middleware/auth.js';
+// import { requireAuth } from '../middleware/auth.js';
 import { updateOrderStatus } from '../controllers/order.status.controller.js';
 import { sendOrderAcceptedEmail, sendOrderPreparedEmail } from '../controllers/email.controller.js';
 
@@ -20,7 +20,7 @@ router.get('/by-site/day', getOrdersBySiteDay);
 router.post('/notify', notifyOrder);
 router.post('/accepted-email', sendOrderAcceptedEmail);
 router.post('/prepared-email', sendOrderPreparedEmail);
-router.patch('/:id/status', requireAuth, express.json(), updateOrderStatus);
+router.patch('/:id/status', express.json(), updateOrderStatus);
 
 
 export default router;
