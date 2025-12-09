@@ -1,5 +1,7 @@
 // src/config/db.js
 import mongoose from 'mongoose';
+import dotenv from 'dotenv';
+dotenv.config();
 
 const uri = process.env.MONGO_URI;
 const HARD_FAIL = String(process.env.DB_HARD_FAIL || '').toLowerCase() === 'true';
