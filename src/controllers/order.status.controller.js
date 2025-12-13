@@ -11,7 +11,6 @@ const ALLOWED_STATUSES = new Set([
 
 export async function updateOrderStatus(req, res) {
   try {
-    console.log("reached");
     
     const { id } = req.params;
     const { status } = req.body || {};
