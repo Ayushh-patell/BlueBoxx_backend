@@ -140,7 +140,8 @@ export const sendOrderAcceptedEmail = async (req, res) => {
     });
   } catch (err) {
     console.error('order accepted email error:', err?.stack || err?.message || err);
-    return res.status(500).json({ error: 'Something went wrong sending the email' });
+        // TODO: TEMP CHANGE WHEN EMAIL NOT WORKING
+    return res.status(200).json({ error: 'Something went wrong sending the email' });
   }
 };
 
@@ -258,6 +259,7 @@ export const sendOrderPreparedEmail = async (req, res) => {
     });
   } catch (err) {
     console.error('order prepared email error:', err?.stack || err?.message || err);
-    return res.status(500).json({ error: 'Something went wrong sending the email' });
+    // TODO: TEMP CHANGE WHEN EMAIL NOT WORKING
+    return res.status(200).json({ error: 'Something went wrong sending the email' });
   }
 };
