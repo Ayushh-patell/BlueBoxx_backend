@@ -45,7 +45,7 @@ const orderSchema = new mongoose.Schema({
   uberTrackingUrl: String,
   uberStatus: String,
 
-  status: { type: String, index: true, enum: ['new', 'processing', 'fulfilled', 'cancelled', 'accepted', 'prepared', 'dispatched'] }, // e.g. 'created', 'pending', etc.
+  status: { type: String, index: true, enum: ['new', 'processing', 'fulfilled', 'cancelled', 'accepted', 'prepared', 'dispatched', 'preparing'] }, // e.g. 'created', 'pending', etc.
 
   pickup: { location: locationSchema },
   dropoff: {
