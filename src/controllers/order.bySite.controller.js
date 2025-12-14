@@ -2,6 +2,7 @@
 import mongoose from 'mongoose';
 import Site from '../models/Site.js';
 import Order from '../models/Order.js'; // shared orders model (strict:false)
+import { UserDefinedMessageSubscriptionListInstance } from 'twilio/lib/rest/api/v2010/account/call/userDefinedMessageSubscription.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG
@@ -150,7 +151,10 @@ export const getOrdersBySiteDay = async (req, res) => {
       tz: usedTz, // echo the tz actually used (validated or fallback)
       window: { start: resolvedStart, end: resolvedEnd }, // single-day window for UI compatibility
       count: orders.length,
-      orders, // includes requested day + extra future days
+      orders: orders.map((item) => {
+        return ({...item, phone:item.userPhone || item.userNumber || item.userContact || "", email: item.userEmail})
+
+      }),
     });
   } catch (err) {
     console.error('getOrdersBySiteDay error:', err?.stack || err?.message || err);
