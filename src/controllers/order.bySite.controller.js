@@ -152,7 +152,7 @@ export const getOrdersBySiteDay = async (req, res) => {
       window: { start: resolvedStart, end: resolvedEnd }, // single-day window for UI compatibility
       count: orders.length,
       orders: orders.map((item) => {
-        return ({...item, phone:item.userPhone || item.userNumber || item.userContact || "", email: item.userEmail})
+        return ({...item, phone:item.customerPhone ||item.userPhone || item.userNumber || item.userContact || "", email: item.userEmail || ""})
 
       }),
     });
