@@ -6,6 +6,66 @@ import Order from '../models/Order.js'; // shared orders model, strict:false
 const CANADA_TZ = 'America/Edmonton';
 const MAX_CUSTOM_DAYS = 62; // ~2 months
 
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS (backward compatible fallbacks)
+// ─────────────────────────────────────────────────────────────────────────────
+const pickDisplayName = (item) => {
+  // New desired precedence:
+  // 1) customerName
+  // 2) guestName
+  // Backward-compatible fallbacks:
+  // 3) userName / name
+  return (
+    item?.customerName ||
+    item?.guestName ||
+    item?.userName ||
+    item?.name ||
+    ''
+  );
+};
+
+const pickDisplayPhone = (item) => {
+  // New desired precedence:
+  // 1) customerNumber
+  // 2) guestNumber
+  // Backward-compatible fallbacks (existing + common legacy fields)
+  return (
+    item?.customerNumber ||
+    item?.guestNumber ||
+    item?.customerPhone ||
+    item?.userPhone ||
+    item?.userNumber ||
+    item?.userContact ||
+    item?.phone ||
+    item?.mobile ||
+    ''
+  );
+};
+
+const pickDisplayEmail = (item) => {
+  // Keep userEmail first (as requested), plus backward-compatible fallbacks
+  return (
+    item?.userEmail ||
+    item?.customerEmail ||
+    item?.guestEmail ||
+    item?.email ||
+    ''
+  );
+};
+
+// Safely set nested fields without breaking if the structure is missing
+const setIfPathExists = (obj, path, value) => {
+  let cur = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (!cur || typeof cur !== 'object') return obj;
+    cur = cur[path[i]];
+  }
+  if (cur && typeof cur === 'object') {
+    cur[path[path.length - 1]] = value;
+  }
+  return obj;
+};
+
 /**
  * GET /api/order/by-site/range?site=<slug>&mode=week|month|custom[&start=YYYY-MM-DD][&end=YYYY-MM-DD]
  *
@@ -59,8 +119,10 @@ export const getOrdersBySiteRange = async (req, res) => {
       endExpr = todayStartInEdmonton; // exclusive upper bound (today@00:00 Edmonton)
     } else {
       // custom: require YYYY-MM-DD for both
-      if (!startStr || !/^\d{4}-\d{2}-\d{2}$/.test(startStr) ||
-          !endStr   || !/^\d{4}-\d{2}-\d{2}$/.test(endStr)) {
+      if (
+        !startStr || !/^\d{4}-\d{2}-\d{2}$/.test(startStr) ||
+        !endStr   || !/^\d{4}-\d{2}-\d{2}$/.test(endStr)
+      ) {
         return res.status(400).json({ error: '`start` and `end` (YYYY-MM-DD) are required for custom mode' });
       }
 
@@ -157,8 +219,25 @@ export const getOrdersBySiteRange = async (req, res) => {
       window: { start: resolvedStart, end: resolvedEnd }, // UTC instants (Edmonton-local midnights)
       count: orders.length,
       orders: orders.map((item) => {
-        return ({...item, phone:item.customerPhone ||item.userPhone || item.userNumber || item.userContact || "", email: item.userEmail || ""})
+        const out = { ...item };
 
+        const displayName = pickDisplayName(out);
+        const displayPhone = pickDisplayPhone(out);
+        const displayEmail = pickDisplayEmail(out);
+
+        // Top-level normalized fields (what your UI already uses)
+        out.phone = displayPhone || '';
+        out.email = displayEmail || '';
+
+        // Populate pickup.location.name and pickup.location.phone (only if structure exists)
+        setIfPathExists(out, ['pickup', 'location', 'name'], displayName || out?.pickup?.location?.name || '');
+        setIfPathExists(out, ['pickup', 'location', 'phone'], displayPhone || out?.pickup?.location?.phone || '');
+
+        // Populate dropoff.location.name and dropoff.location.phone (only if structure exists)
+        setIfPathExists(out, ['dropoff', 'location', 'name'], displayName || out?.dropoff?.location?.name || '');
+        setIfPathExists(out, ['dropoff', 'location', 'phone'], displayPhone || out?.dropoff?.location?.phone || '');
+
+        return out;
       }),
     });
   } catch (err) {
