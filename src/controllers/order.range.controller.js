@@ -156,7 +156,10 @@ export const getOrdersBySiteRange = async (req, res) => {
       tz: CANADA_TZ,
       window: { start: resolvedStart, end: resolvedEnd }, // UTC instants (Edmonton-local midnights)
       count: orders.length,
-      orders
+      orders: orders.map((item) => {
+        return ({...item, phone:item.customerPhone ||item.userPhone || item.userNumber || item.userContact || "", email: item.userEmail || ""})
+
+      }),
     });
   } catch (err) {
     console.error('getOrdersBySiteRange error:', err?.stack || err?.message || err);
