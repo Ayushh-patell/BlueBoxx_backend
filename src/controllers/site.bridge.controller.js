@@ -52,7 +52,7 @@ const upstreamPatchSiteById = async (req, siteId, patchBody) => {
     Accept: 'application/json',
     'Content-Type': 'application/json',
   };
-  if (authHeader) headers.Authorization = authHeader;
+  // if (authHeader) headers.Authorization = authHeader;
 
   const res = await fetch(url, {
     method: 'PATCH',
