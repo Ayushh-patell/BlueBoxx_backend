@@ -10,6 +10,7 @@ import './config/db.js';
 import userRoutes from './routes/user.js';
 import orderRoutes from './routes/order.js';
 import utilRoutes from './routes/utils.js';
+import siteBridgeRoutes from './routes/siteBridge.js';
 import { stripeWebhook } from './api/stripeWebhook.js';
 
 const app = express();
@@ -60,6 +61,8 @@ app.get('/health', (_, res) => res.status(200).send('OK'));
 app.use('/api/user', userRoutes);
 app.use('/api/order', orderRoutes);
 app.use('/api/util', utilRoutes);
+app.use('/api/site', siteBridgeRoutes);
+
 
 app.get('/', (req, res) => res.send('API is running'));
 
