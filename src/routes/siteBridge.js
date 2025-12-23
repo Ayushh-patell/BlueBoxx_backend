@@ -1,5 +1,5 @@
 import express from 'express';
-import { getSiteBySlugBridge, patchStoreClosedOverrideBridge } from '../controllers/site.bridge.controller';
+import { getSiteBySlugBridge, patchStoreClosedOverrideBridge } from '../controllers/site.bridge.controller.js';
 
 const router = express.Router();
 
