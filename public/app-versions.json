@@ -5,7 +5,7 @@
     "storeUrl": "itms-apps://apps.apple.com/app/idYOUR_APP_ID"
   },
   "android": {
-    "latest": "1.2.4",
+    "latest": "1.2.5",
     "minimum": "1.0.0",
     "storeUrl": "https://play.google.com/store/apps/details?id=com.masterminds.blueboxx"
   }
