@@ -214,7 +214,7 @@ export const getOrdersBySiteDay = async (req, res) => {
       count: orders.length,
       orders: orders.map((item) => {
         // Work on a shallow clone so we don't mutate aggregation result objects unexpectedly
-        const out = { ...item };
+        let out = { ...item };
 
         const displayName = pickDisplayName(out);
         const displayPhone = pickDisplayPhone(out);
@@ -223,6 +223,10 @@ export const getOrdersBySiteDay = async (req, res) => {
         // Top-level normalized fields (what your UI already uses)
         out.phone = displayPhone || '';
         out.email = displayEmail || '';
+
+        if(out.status === "confirmed") {
+          out.status = "paid";
+        }
 
         // Populate pickup.location.name and pickup.location.phone (only if structure exists)
         setIfPathExists(out, ['pickup', 'location', 'name'], displayName || out?.pickup?.location?.name || '');
