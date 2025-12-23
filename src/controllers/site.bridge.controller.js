@@ -125,7 +125,7 @@ export const patchStoreClosedOverrideBridge = async (req, res) => {
     const next = storeClosedOverride;
 
     // 2) Patch upstream by siteId
-    const patched = await upstreamPatchSiteById(req, siteId, { storeClosedOverride: next, ADMIN_SECRET:"admin-secret-key" });
+    const patched = await upstreamPatchSiteById(req, siteId, { storeClosedOverride: next, secret:"admin-secret-key" });
 
     // 3) Log basics in console (no DB)
     const action = next ? 'MANUAL_CLOSE' : 'MANUAL_OPEN';
