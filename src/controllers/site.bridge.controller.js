@@ -45,7 +45,7 @@ const upstreamGetSiteBySlug = async (slug) => {
 const upstreamPatchSiteById = async (req, siteId, patchBody) => {
   requireSitePlatformUrl();
 
-  const url = `${SITE_PLATFORM_URL}/api/admin/sites/${encodeURIComponent(siteId)}`;
+  const url = `${SITE_PLATFORM_URL}/api/admin/sites/${encodeURIComponent(siteId)}/close-override`;
   const authHeader = pickAuthHeaderForUpstream(req);
 
   const headers = {
