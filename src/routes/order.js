@@ -21,7 +21,7 @@ router.get('/by-site/day', getOrdersBySiteDay);
 router.post('/notify', notifyOrder);
 router.post('/accepted-email', sendOrderAcceptedEmail);
 router.post('/prepared-email', sendOrderPreparedEmail);
-router.get('/order/:orderId/print', getOrderForPrint);
+router.get('/:orderId/print', getOrderForPrint);
 router.patch('/:id/status', express.json(), updateOrderStatus);
 
 
