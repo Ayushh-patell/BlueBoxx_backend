@@ -222,3 +222,113 @@ export const notifyOrder = async (req, res) => {
   const result = await sendOrderNotification(req.body || {});
   return res.status(result.statusCode).json(result.body);
 };
+
+// POST /api/order/notify-test
+// body: { username: "someuser" }
+// Sends a test notification ONLY to that user's tokens, with hard-coded data.
+export const notifyTestUser = async (req, res) => {
+  try {
+    const usernameRaw = String(req.body?.username || '').trim();
+    if (!usernameRaw) {
+      return res.status(400).json({ error: 'Missing "username" in body' });
+    }
+
+    // Find user by username OR email OR name (pick what matches your schema)
+    const user = await User.findOne({
+      $or: [
+        { username: usernameRaw },
+        { email: usernameRaw },
+        { name: usernameRaw },
+      ],
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        error: 'User not found',
+        tried: usernameRaw,
+      });
+    }
+
+    // Only this user's tokens
+    let tokens = normalizeTokens(user.fcm_tokens);
+    tokens = uniq(tokens);
+
+    if (!tokens.length) {
+      return res.status(404).json({
+        error: 'No valid FCM tokens found for this user',
+        userId: String(user._id),
+        username: user.username || null,
+        email: user.email || null,
+      });
+    }
+
+    // Hard-coded (same shape/keys as your real order notifications)
+    const title = '🧪 Test Order Notification';
+    const body = 'This is a test notification (hard-coded payload).';
+
+    // Keep data keys exactly like your real notification uses
+    const hardcodedData = {
+      title,
+      body,
+      orderId: 'TEST_ORDER_ID_12345',
+      fulfillmentType: 'pickup',     // hard-coded
+      totalDollars: '12.34',         // hard-coded
+      status: 'confirmed',           // hard-coded
+      sound: 'order',                // per your requirement
+    };
+
+    const batches = chunk(tokens, 500);
+
+    let totalSuccess = 0;
+    let totalFailure = 0;
+    const failed = [];
+
+    for (const batchTokens of batches) {
+      const message = {
+        tokens: batchTokens,
+        data: hardcodedData,
+        android: { priority: 'high' },
+        apns: { headers: { 'apns-priority': '10' } },
+        content_available: true,
+        priority: 'high',
+      };
+
+      const response = await admin.messaging().sendEachForMulticast(message);
+
+      totalSuccess += response.successCount || 0;
+      totalFailure += response.failureCount || 0;
+
+      response.responses.forEach((r, i) => {
+        if (!r.success) {
+          failed.push({
+            token: batchTokens[i],
+            error: r.error?.message || 'Unknown error',
+          });
+        }
+      });
+    }
+
+    return res.status(200).json({
+      message: `Test notification sent. ${totalSuccess} success, ${totalFailure} failure.`,
+      user: {
+        id: String(user._id),
+        username: user.username || null,
+        email: user.email || null,
+        site: user.site || null,
+      },
+      tokenCount: tokens.length,
+      outgoing: hardcodedData,
+      failedTokens: failed,
+    });
+  } catch (err) {
+    console.error('❌ notifyTestUser error:', err?.message || err);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      details: err?.message || String(err),
+    });
+  }
+};
+
+
+
+
