@@ -67,6 +67,32 @@ const normalizePaymentMethod = (order) => {
   return '';
 };
 
+const mapSelections = (selections) => {
+  if (!Array.isArray(selections) || selections.length === 0) {
+    return [];
+  }
+
+  return selections.map((data) => {
+    // 1. Extract the core fields you requested
+    const formattedNode = {
+      groupLabel: data.groupLabel,
+      optionLabel: data.optionLabel,
+      priceDelta: data.priceDelta,
+      quantity: data.quantity,
+      basePrice: data.basePrice,
+    };
+
+    // 2. Recursively handle childSelections if they exist
+    if (data.childSelections && data.childSelections.length > 0) {
+      formattedNode.childSelections = mapSelections(data.childSelections);
+    } else {
+      formattedNode.childSelections = [];
+    }
+
+    return formattedNode;
+  });
+};
+
 const normalizeOrderForPrint = (orderDoc, siteDoc) => {
   const displayName = pickDisplayName(orderDoc);
   const displayPhone = pickDisplayPhone(orderDoc);
@@ -111,8 +137,8 @@ const normalizeOrderForPrint = (orderDoc, siteDoc) => {
   out.items = out.items.map((it) => ({
     ...it,
     quantity: it?.quantity ?? it?.qty ?? 1,
-    selectedOptions: Array.isArray(it?.selectedOptions) ? it.selectedOptions : [],
-    comboUnits: Array.isArray(it?.comboUnits) ? it.comboUnits : [],
+    selectedOptions: Array.isArray(it?.selectedOptions) ? mapSelections(it.selectedOptions) : [],
+    comboUnits: Array.isArray(it?.comboUnits) ? it.comboUnits.map((data) => ({...data, selectedOptions:mapSelections(data.selectedOptions)})) : [],
   }));
 
   return out;

@@ -263,8 +263,8 @@ export const notifyTestUser = async (req, res) => {
     }
 
     // Hard-coded (same shape/keys as your real order notifications)
-    const title = '🧪 Test Order Notification';
-    const body = 'This is a test notification (hard-coded payload).';
+    const title = ' Test Order Notification';
+    const body = 'This is a test notification.';
 
     // Keep data keys exactly like your real notification uses
     const hardcodedData = {
