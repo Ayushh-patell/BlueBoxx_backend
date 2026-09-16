@@ -50,7 +50,7 @@ export default function Orders() {
     try {
       let data;
       if (mode === 'day') {
-        data = await api.ordersByDay({ site, date, extraDays: 0 });
+        data = await api.ordersByDay({ site, date, extraDays: 2 });
       } else {
         data = await api.ordersByRange({
           site,

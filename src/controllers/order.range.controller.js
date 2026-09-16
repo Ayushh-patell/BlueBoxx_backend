@@ -5,6 +5,7 @@ import Order from '../models/Order.js'; // shared orders model, strict:false
 
 const CANADA_TZ = 'America/Edmonton';
 const MAX_CUSTOM_DAYS = 62; // ~2 months
+const RANGE_FUTURE_DAYS = 2;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS (backward compatible fallbacks)
@@ -70,8 +71,8 @@ const setIfPathExists = (obj, path, value) => {
  * GET /api/order/by-site/range?site=<slug>&mode=week|month|custom[&start=YYYY-MM-DD][&end=YYYY-MM-DD]
  *
  * Window semantics (all in America/Edmonton):
- * - week:  last 7 full days ending yesterday -> [today@00:00 - 7d, today@00:00)
- * - month: last 30 full days ending yesterday -> [today@00:00 - 30d, today@00:00)
+ * - week:  last 7 days plus 2 future days -> [today@00:00 - 7d, today@00:00 + 2d)
+ * - month: last 30 days plus 2 future days -> [today@00:00 - 30d, today@00:00 + 2d)
  * - custom: inclusive calendar days -> [start@00:00, end@00:00 + 1day)
  *
  * Notes:
@@ -116,7 +117,14 @@ export const getOrdersBySiteRange = async (req, res) => {
           timezone: CANADA_TZ
         }
       };
-      endExpr = todayStartInEdmonton; // exclusive upper bound (today@00:00 Edmonton)
+      endExpr = {
+        $dateAdd: {
+          startDate: todayStartInEdmonton,
+          unit: 'day',
+          amount: RANGE_FUTURE_DAYS,
+          timezone: CANADA_TZ
+        }
+      };
     } else {
       // custom: require YYYY-MM-DD for both
       if (
